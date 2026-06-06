@@ -363,7 +363,7 @@
         </div>
 
     <div class="section-title">
-        <span>تفاصيل الدفع والمطالبة المالية:</span>
+        <span>تفاصيل الدفع والمطالبة المالية (أسماء مجمعة بدون تكرار):</span>
     </div>
 
     <div class="details-card">
@@ -378,8 +378,8 @@
 
         <div class="calc-box">
             <div class="calc-row">
-                <span>مستهدف التحصيل الحقيقي للـ 19 اسم:</span>
-                <span id="calc-target">٩٥,٠٠٠ ج.م</span>
+                <span>مستهدف التحصيل الحقيقي للشهر:</span>
+                <span id="calc-target">٠ ج.م</span>
             </div>
             <div class="calc-row">
                 <span>تم تحصيله فعلياً:</span>
@@ -463,7 +463,7 @@
                 btn.onclick = () => selectMonth(item.id);
                 
                 btn.innerHTML = `
-                    <div class="m-name">دور ${item.id} (${item.month.split(' ')[0] + ' ' + item.month.split(' ')[1]})</div>
+                    <div class="m-name">دور ${item.id} (${item.month.trim()})</div>
                     <div class="m-receiver">${item.receiver}</div>
                 `;
                 container.appendChild(btn);
@@ -478,7 +478,7 @@
             loadMonthDetails(id);
         }
 
-        // Compute runtime statements and push template DOM changes
+        // Compute runtime statements and push template DOM changes with unique names aggregation
         function loadMonthDetails(monthId) {
             const currentData = associationData.find(m => m.id === monthId);
             document.getElementById('active-month-title').innerText = `الدور رقم ${currentData.id} - شهر ${currentData.month}`;
@@ -489,61 +489,103 @@
 
             let targetCollection = 0;
             let actualPaid = 0;
-            let flatIndex = 0;
+
+            // Step 1: Check if the current month has sub-receivers to skip them from paying
+            const activeReceiversList = currentData.breakdowns.map(p => p.name);
+
+            // Step 2: Aggregate names across all 20 rows to compile unique names map
+            let aggregatedPayers = {};
 
             associationData.forEach(m => {
                 const isReceiverMonth = (m.id === monthId);
                 
                 m.breakdowns.forEach(p => {
-                    const row = document.createElement('div');
-                    row.className = 'member-row';
-                    
-                    // Unique deterministic ledger record tracking key
-                    const storageKey = `gamya_v1_m${monthId}_idx${flatIndex}`;
-                    
+                    // Unique key on Sheet representing this person's specific slot
+                    const uniqueSlotKey = `gamya_v2_m${monthId}_payer_${p.name.replace(/\s+/g, '_')}`;
+                    const isPaid = cloudState[uniqueSlotKey] === 'true' || cloudState[uniqueSlotKey] === true;
+
                     if (isReceiverMonth) {
-                        row.classList.add('receiver-row');
-                        row.innerHTML = `
-                            <div class="member-info">
-                                <div class="member-name">${p.name}</div>
-                                <div class="member-desc">دور ${m.id} - ${p.desc} <span class="status-badge badge-done">صاحب الدور (القبض)</span></div>
-                            </div>
-                            <div class="member-amount">0 ج.م</div>
-                            <label class="checkbox-container">
-                                <input type="checkbox" checked disabled>
-                                <span class="checkmark"></span>
-                            </label>
-                        `;
+                        // If it's the receiver row, they don't pay anything this month
+                        if (!aggregatedPayers[p.name]) {
+                            aggregatedPayers[p.name] = {
+                                name: p.name,
+                                totalAmount: 0,
+                                isReceiver: true,
+                                details: `دور ${m.id} - صاحب الدور (القبض)`,
+                                storageKey: uniqueSlotKey,
+                                isPaid: true
+                            };
+                        }
                     } else {
-                        targetCollection += p.amount;
-                        const isPaid = cloudState[storageKey] === 'true' || cloudState[storageKey] === true;
-                        
-                        if (isPaid) {
-                            actualPaid += p.amount;
-                            row.classList.add('paid');
+                        // Regular payer logic
+                        // If this payer is already a receiver this month, skip adding payment amounts
+                        if (activeReceiversList.includes(p.name)) {
+                            return; 
                         }
 
-                        row.innerHTML = `
-                            <div class="member-info">
-                                <div class="member-name">${p.name}</div>
-                                <div class="member-desc">دور ${m.id} - ${p.desc} ${isPaid ? '<span class="status-badge badge-done">تم الدفع</span>' : '<span class="status-badge badge-waiting">انتظار</span>'}</div>
-                            </div>
-                            <div class="member-amount">${p.amount.toLocaleString('ar-EG')} ج.م</div>
-                            <label class="checkbox-container">
-                                <input type="checkbox" ${isPaid ? 'checked' : ''} onchange="togglePaid(${monthId}, ${flatIndex}, ${p.amount}, this)">
-                                <span class="checkmark"></span>
-                            </label>
-                        `;
+                        if (!aggregatedPayers[p.name]) {
+                            aggregatedPayers[p.name] = {
+                                name: p.name,
+                                totalAmount: 0,
+                                isReceiver: false,
+                                details: `مجمع أنصبة بالجمعية`,
+                                storageKey: uniqueSlotKey,
+                                isPaid: isPaid
+                            };
+                        }
+                        
+                        aggregatedPayers[p.name].totalAmount += p.amount;
+                        // If any breakdown slot is unpaid globally, sync current aggregated state status
+                        if (!isPaid) {
+                            aggregatedPayers[p.name].isPaid = false;
+                        }
                     }
-                    
-                    listContainer.appendChild(row);
-                    flatIndex++;
                 });
+            });
+
+            // Step 3: Render the aggregated unique records list onto the DOM structure
+            Object.values(aggregatedPayers).forEach(payer => {
+                const row = document.createElement('div');
+                row.className = 'member-row';
+
+                if (payer.isReceiver) {
+                    row.classList.add('receiver-row');
+                    row.innerHTML = `
+                        <div class="member-info">
+                            <div class="member-name">${payer.name}</div>
+                            <div class="member-desc">${payer.details} <span class="status-badge badge-done">صاحب الدور (القبض)</span></div>
+                        </div>
+                        <div class="member-amount">0 ج.م</div>
+                        <label class="checkbox-container">
+                            <input type="checkbox" checked disabled>
+                            <span class="checkmark"></span>
+                        </label>
+                    `;
+                } else {
+                    targetCollection += payer.totalAmount;
+                    if (payer.isPaid) {
+                        actualPaid += payer.totalAmount;
+                        row.classList.add('paid');
+                    }
+
+                    row.innerHTML = `
+                        <div class="member-info">
+                            <div class="member-name">${payer.name}</div>
+                            <div class="member-desc">${payer.details} ${payer.isPaid ? '<span class="status-badge badge-done">تم الدفع بالكامل</span>' : '<span class="status-badge badge-waiting">انتظار الدفع</span>'}</div>
+                        </div>
+                        <div class="member-amount">${payer.totalAmount.toLocaleString('ar-EG')} ج.م</div>
+                        <label class="checkbox-container">
+                            <input type="checkbox" ${payer.isPaid ? 'checked' : ''} onchange="togglePaid('${payer.storageKey}', this)">
+                            <span class="checkmark"></span>
+                        </label>
+                    `;
+                }
+                listContainer.appendChild(row);
             });
 
             // Refresh runtime state computation boards
             document.getElementById('calc-target').innerText = `${targetCollection.toLocaleString('ar-EG')} ج.م`;
-            document.getElementById('calc-paid').innerText = `${actualPaid.toLocaleString('ar-EG')} ج.m`;
+            document.getElementById('calc-paid').innerText = `${actualPaid.toLocaleString('ar-EG')} ج.م`;
             document.getElementById('calc-total-box').innerText = `${actualPaid.toLocaleString('ar-EG')} ج.م`;
             document.getElementById('sum-collected').innerText = `${actualPaid.toLocaleString('ar-EG')} ج.م`;
             
@@ -554,14 +596,13 @@
             document.getElementById('sum-percent').innerText = `${percent}%`;
         }
 
-        // Commit transaction update asynchronously to the Google Sheet schema
-        window.togglePaid = async function(monthId, flatIndex, amount, checkbox) {
-            const storageKey = `gamya_v1_m${monthId}_idx${flatIndex}`;
+        // Commit transaction update asynchronously to the Google Sheet schema using unique storage key
+        window.togglePaid = async function(storageKey, checkbox) {
             const targetValue = checkbox.checked ? 'true' : 'false';
             
             // Immediate UI update for smooth UX
             cloudState[storageKey] = targetValue;
-            loadMonthDetails(monthId);
+            loadMonthDetails(currentMonthId);
             
             showSpinner(true);
             try {
